@@ -41,7 +41,7 @@ export function buildConcatListContent(inputPaths: string[]): string {
 }
 
 export function escapeConcatFilePath(filePath: string): string {
-  return path.resolve(filePath).replace(/\\/g, "/").replace(/'/g, "'\\''");
+  return normalizeFfmpegPath(filePath).replace(/'/g, "'\\''");
 }
 
 export function buildSubtitleTimeline(scenes: SubtitleSceneInput[]): SubtitleCue[] {
@@ -168,7 +168,22 @@ function escapeAssText(value: string): string {
 }
 
 function escapeFilterPath(filePath: string): string {
-  return path.resolve(filePath).replace(/\\/g, "/").replace(/:/g, "\\:");
+  return normalizeFfmpegPath(filePath).replace(/:/g, "\\:");
+}
+
+function normalizeFfmpegPath(filePath: string): string {
+  if (isWindowsAbsolutePath(filePath) || isWindowsUncPath(filePath)) {
+    return filePath.replace(/\\/g, "/");
+  }
+  return path.resolve(filePath).replace(/\\/g, "/");
+}
+
+function isWindowsAbsolutePath(filePath: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(filePath);
+}
+
+function isWindowsUncPath(filePath: string): boolean {
+  return /^\\\\[^\\]+\\[^\\]+/.test(filePath) || /^\/\/[^/]+\/[^/]+/.test(filePath);
 }
 
 function sanitizeAssFileName(fileName: string): string {
