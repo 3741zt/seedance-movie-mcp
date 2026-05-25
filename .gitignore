@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+outputs/
+.mcp-runtime/
+*.log
+.env

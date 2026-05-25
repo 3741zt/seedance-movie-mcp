@@ -1,0 +1,37 @@
+{
+  "name": "seedance-movie-mcp",
+  "version": "0.1.0",
+  "description": "Local stdio MCP server for Volcengine Ark Seedance 2.0 video generation.",
+  "type": "module",
+  "bin": {
+    "seedance-movie-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "node scripts/run-with-local-node.mjs ./node_modules/typescript/bin/tsc -p tsconfig.json",
+    "test": "node scripts/run-with-local-node.mjs ./node_modules/vitest/vitest.mjs run",
+    "dev": "node scripts/run-with-local-node.mjs ./node_modules/tsx/dist/cli.mjs src/index.ts",
+    "start": "node scripts/run-with-local-node.mjs dist/index.js",
+    "example:dry-run": "node scripts/run-with-local-node.mjs examples/generate-from-text.mjs"
+  },
+  "keywords": [
+    "mcp",
+    "seedance",
+    "volcengine",
+    "ark",
+    "video"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.18.2",
+    "ffmpeg-static": "^5.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.14"
+  },
+  "engines": {
+    "node": ">=20.12"
+  }
+}

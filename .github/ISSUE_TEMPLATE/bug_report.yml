@@ -1,0 +1,32 @@
+name: Bug report / 缺陷报告
+description: Report a reproducible problem. / 报告可复现问题。
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary / 摘要
+      description: What happened? / 发生了什么？
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction / 复现步骤
+      description: Include commands, tool arguments, and redacted logs. Do not include secrets. / 请提供命令、工具参数和脱敏日志，不要包含密钥。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior / 预期行为
+    validations:
+      required: false
+  - type: input
+    id: environment
+    attributes:
+      label: Environment / 环境
+      description: OS, Codex App or CLI, Node version, ffmpeg version. / 操作系统、Codex App 或 CLI、Node 版本、ffmpeg 版本。
+    validations:
+      required: false
