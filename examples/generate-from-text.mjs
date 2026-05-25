@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const realGeneration = process.argv.includes("--real");
+const approvalArg = process.argv.find((arg) => arg.startsWith("--approval-id="));
+const promptApprovalId = approvalArg?.slice("--approval-id=".length);
 
 const client = new Client({ name: "seedance-movie-example", version: "0.1.0" });
 const transport = new StdioClientTransport({
@@ -32,7 +34,8 @@ try {
       subtitleMode: "manifest",
       maxConcurrency: 2,
       dryRun: !realGeneration,
-      returnPrompts: false,
+      promptApprovalId,
+      returnPrompts: true,
       outputFileName: "example-preview.mp4",
       outputManifestFileName: "example-preview-manifest.json"
     }

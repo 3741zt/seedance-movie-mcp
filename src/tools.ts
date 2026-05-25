@@ -7,6 +7,7 @@ import {
   type ReferenceMediaType,
   type VideoTaskResult
 } from "./ark.js";
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -26,7 +27,7 @@ import {
   rememberVideoTask
 } from "./cache.js";
 import { DEFAULT_OUTPUT_DIR, getRuntimeConfig, normalizeMaxConcurrency } from "./config.js";
-import { buildSubtitleTimeline, burnSubtitles, concatVideos, writeAssSubtitleFile } from "./ffmpeg.js";
+import { buildSubtitleTimeline, concatVideos, writeAssSubtitleFile, writeSrtSubtitleFile } from "./ffmpeg.js";
 import { downloadVideo } from "./files.js";
 import { runBoundedParallel } from "./parallel.js";
 import { buildReferenceImagePrompts } from "./referenceImages.js";
@@ -318,6 +319,10 @@ export const TOOL_DEFINITIONS = [
         },
         dryRun: { type: "boolean", description: "true 时只拆分分镜并返回费用估算，不调用视频 API" },
         estimateOnly: { type: "boolean", description: "dryRun 的别名" },
+        promptApprovalId: {
+          type: "string",
+          description: "从上一轮计划返回的 promptApprovalId。缺失或不匹配时不会调用视频 API"
+        },
         useCache: { type: "boolean", description: "是否复用相同 prompt+参数的本地片段或历史任务，默认 true" },
         forceRegenerate: { type: "boolean", description: "true 时忽略缓存，强制重新生成" },
         maxEstimatedCostCny: { type: "number", description: "费用粗估超过该人民币金额时拒绝创建任务" },
@@ -327,7 +332,7 @@ export const TOOL_DEFINITIONS = [
         pollIntervalSeconds: { type: "number", description: "轮询间隔秒数，默认 30" },
         timeoutSeconds: { type: "number", description: "每个任务超时秒数，默认 1800" },
         maxConcurrency: { type: "number", description: "并行生成上限，默认 3，允许 1-5" },
-        subtitleMode: { type: "string", description: "字幕模式：none、manifest 或 burn，默认 manifest" },
+        subtitleMode: { type: "string", description: "字幕模式：none、manifest、srt 或 ass，默认 manifest" },
         subtitles: {
           type: "array",
           items: { type: "string" },
@@ -368,6 +373,88 @@ export const TOOL_DEFINITIONS = [
     }
   },
   {
+    name: "generate_movie_from_scenes",
+    description:
+      "Generate a movie from explicit, user-polished scene prompts. Returns an approval plan first unless promptApprovalId matches.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        scenes: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "分镜 ID，默认按顺序生成 scene-01" },
+              duration: { type: "number", description: "该分镜秒数，默认按 qualityProfile" },
+              ratio: { type: "string", description: "该分镜画幅，默认使用顶层 ratio 或 16:9" },
+              prompt: { type: "string", description: "用户确认后的完整分镜提示词" }
+            },
+            required: ["prompt"]
+          },
+          description: "已由用户打磨确认的分镜提示词数组，最多 8 段"
+        },
+        ratio: { type: "string", description: "默认画幅比例，例如 16:9 或 9:16" },
+        resolution: { type: "string", description: "分辨率，默认 1080p" },
+        qualityProfile: {
+          type: "string",
+          description: "cheap_preview=最多3段/4秒/720p，draft_movie=完整720p草稿，final_1080p=正式1080p，默认 final_1080p"
+        },
+        dryRun: { type: "boolean", description: "true 时只返回费用和 approval id，不调用视频 API" },
+        estimateOnly: { type: "boolean", description: "dryRun 的别名" },
+        promptApprovalId: {
+          type: "string",
+          description: "从上一轮计划返回的 promptApprovalId。缺失或不匹配时不会调用视频 API"
+        },
+        useCache: { type: "boolean", description: "是否复用相同 prompt+参数的本地片段或历史任务，默认 true" },
+        forceRegenerate: { type: "boolean", description: "true 时忽略缓存，强制重新生成" },
+        maxEstimatedCostCny: { type: "number", description: "费用粗估超过该人民币金额时拒绝创建任务" },
+        generateAudio: { type: "boolean", description: "是否生成音频，默认 true" },
+        watermark: { type: "boolean", description: "是否加水印，默认 false" },
+        outputFileName: { type: "string", description: "最终拼接视频文件名" },
+        pollIntervalSeconds: { type: "number", description: "轮询间隔秒数，默认 30" },
+        timeoutSeconds: { type: "number", description: "每个任务超时秒数，默认 1800" },
+        maxConcurrency: { type: "number", description: "并行生成上限，默认 3，允许 1-5" },
+        subtitleMode: { type: "string", description: "字幕模式：none、manifest、srt 或 ass，默认 manifest" },
+        subtitles: {
+          type: "array",
+          items: { type: "string" },
+          description: "可选。每个分镜对应一条字幕，不传则使用分镜 beat"
+        },
+        outputManifestFileName: { type: "string", description: "输出 manifest JSON 文件名" },
+        returnPrompts: { type: "boolean", description: "是否返回完整提示词。approval 计划会始终返回完整提示词" },
+        referenceImageUrls: {
+          type: "array",
+          items: { type: "string" },
+          description: "可选参考图片 URL，所有分镜都会带入"
+        },
+        referenceVideoUrls: {
+          type: "array",
+          items: { type: "string" },
+          description: "可选参考视频 URL，所有分镜都会带入"
+        },
+        referenceAudioUrls: {
+          type: "array",
+          items: { type: "string" },
+          description: "可选参考音频 URL，所有分镜都会带入"
+        },
+        references: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              type: { type: "string", description: "image_url、video_url 或 audio_url" },
+              url: { type: "string", description: "公网可访问素材 URL" },
+              role: { type: "string", description: "默认 reference_image/reference_video/reference_audio" }
+            },
+            required: ["type", "url"]
+          },
+          description: "通用参考素材数组，所有分镜都会带入"
+        }
+      },
+      required: ["scenes"]
+    }
+  },
+  {
     name: "generate_movie_from_text",
     description:
       "Token-saving one-shot flow: accept article/text, infer detailed prompts inside MCP, call Seedance/Jimeng 2.0 API over HTTP, wait, download, and concat.",
@@ -395,6 +482,10 @@ export const TOOL_DEFINITIONS = [
         },
         dryRun: { type: "boolean", description: "true 时只推理分镜并返回费用估算，不调用视频 API" },
         estimateOnly: { type: "boolean", description: "dryRun 的别名" },
+        promptApprovalId: {
+          type: "string",
+          description: "从上一轮计划返回的 promptApprovalId。缺失或不匹配时不会调用视频 API"
+        },
         useCache: { type: "boolean", description: "是否复用相同 prompt+参数的本地片段或历史任务，默认 true" },
         forceRegenerate: { type: "boolean", description: "true 时忽略缓存，强制重新生成" },
         maxEstimatedCostCny: { type: "number", description: "费用粗估超过该人民币金额时拒绝创建任务" },
@@ -404,7 +495,7 @@ export const TOOL_DEFINITIONS = [
         pollIntervalSeconds: { type: "number", description: "轮询间隔秒数，默认 30" },
         timeoutSeconds: { type: "number", description: "每个任务超时秒数，默认 1800" },
         maxConcurrency: { type: "number", description: "并行生成上限，默认 3，允许 1-5" },
-        subtitleMode: { type: "string", description: "字幕模式：none、manifest 或 burn，默认 manifest" },
+        subtitleMode: { type: "string", description: "字幕模式：none、manifest、srt 或 ass，默认 manifest" },
         subtitles: {
           type: "array",
           items: { type: "string" },
@@ -472,6 +563,8 @@ export async function callTool(name: string, rawArgs: unknown): Promise<unknown>
       return concatVideosTool(args);
     case "generate_movie":
       return generateMovieTool(args);
+    case "generate_movie_from_scenes":
+      return generateMovieFromScenesTool(args);
     case "generate_movie_from_text":
       return generateMovieFromTextTool(args);
     default:
@@ -687,31 +780,37 @@ async function generateMovieTool(args: JsonRecord): Promise<unknown> {
     estimate,
     promptMode: "story-split"
   };
+  const returnPrompts = optionalBoolean(args, "returnPrompts") ?? false;
 
   if (isDryRun(args)) {
-    return {
-      ...plan,
-      scenes: summarizeScenes(scenes, optionalBoolean(args, "returnPrompts") ?? false),
-      plannedOnly: true,
-      note: "No Ark HTTP request was sent."
-    };
+    return buildPromptPlanResponse({ ...plan, args, references, resolution, generateAudio }, false);
   }
 
   const maxEstimatedCostCny = optionalNumber(args, "maxEstimatedCostCny");
   if (isEstimatedCostOverLimit(estimate, maxEstimatedCostCny)) {
     return {
       ...plan,
-      scenes: summarizeScenes(scenes, optionalBoolean(args, "returnPrompts") ?? false),
+      scenes: summarizeScenes(scenes, returnPrompts),
       taskIds: [],
       clipPaths: [],
       error: `Estimated cost ${estimate.estimatedCostCny} CNY is over maxEstimatedCostCny ${maxEstimatedCostCny}. No video API request was sent.`
     };
   }
 
+  const subtitleError = getSubtitleModeError(args);
+  if (subtitleError) {
+    return buildNoApiMovieError({ ...plan, returnPrompts, error: subtitleError });
+  }
+
+  const approvalPlan = buildPromptPlanResponse({ ...plan, args, references, resolution, generateAudio }, true);
+  if (!isMatchingPromptApproval(args, approvalPlan.promptApprovalId)) {
+    return withPromptApprovalError(args, approvalPlan);
+  }
+
   const { client, error } = createArkClientFromEnv();
   if (!client) {
     return {
-      scenes: summarizeScenes(scenes, optionalBoolean(args, "returnPrompts") ?? false),
+      scenes: summarizeScenes(scenes, returnPrompts),
       taskIds: [],
       clipPaths: [],
       qualityProfile: profile,
@@ -729,7 +828,79 @@ async function generateMovieTool(args: JsonRecord): Promise<unknown> {
     profile,
     estimate,
     promptMode: "story-split",
-    returnPrompts: optionalBoolean(args, "returnPrompts") ?? false,
+    returnPrompts,
+    client
+  });
+}
+
+async function generateMovieFromScenesTool(args: JsonRecord): Promise<unknown> {
+  const profile = getQualityProfileSettings(optionalString(args, "qualityProfile"));
+  const references = readReferences(args);
+  const scenes = readApprovedScenes(args, profile);
+  const complianceError = getComplianceError(scenes.map((scene) => scene.prompt).join(" "));
+  if (complianceError) {
+    return { error: complianceError };
+  }
+
+  const resolution = optionalString(args, "resolution") ?? profile.resolution;
+  const generateAudio = optionalBoolean(args, "generateAudio") ?? profile.generateAudio;
+  const estimate = estimateVideoUsage(scenes, { resolution, references });
+  const plan = {
+    scenes,
+    qualityProfile: profile,
+    estimate,
+    promptMode: "approved-scenes"
+  };
+  const returnPrompts = optionalBoolean(args, "returnPrompts") ?? false;
+
+  if (isDryRun(args)) {
+    return buildPromptPlanResponse({ ...plan, args, references, resolution, generateAudio }, false);
+  }
+
+  const maxEstimatedCostCny = optionalNumber(args, "maxEstimatedCostCny");
+  if (isEstimatedCostOverLimit(estimate, maxEstimatedCostCny)) {
+    return {
+      ...plan,
+      scenes: summarizeScenes(scenes, returnPrompts),
+      taskIds: [],
+      clipPaths: [],
+      error: `Estimated cost ${estimate.estimatedCostCny} CNY is over maxEstimatedCostCny ${maxEstimatedCostCny}. No video API request was sent.`
+    };
+  }
+
+  const subtitleError = getSubtitleModeError(args);
+  if (subtitleError) {
+    return buildNoApiMovieError({ ...plan, returnPrompts, error: subtitleError });
+  }
+
+  const approvalPlan = buildPromptPlanResponse({ ...plan, args, references, resolution, generateAudio }, true);
+  if (!isMatchingPromptApproval(args, approvalPlan.promptApprovalId)) {
+    return withPromptApprovalError(args, approvalPlan);
+  }
+
+  const { client, error } = createArkClientFromEnv();
+  if (!client) {
+    return {
+      scenes: summarizeScenes(scenes, returnPrompts),
+      taskIds: [],
+      clipPaths: [],
+      qualityProfile: profile,
+      estimate,
+      promptMode: "approved-scenes",
+      error
+    };
+  }
+
+  return runSceneMovieFlow({
+    args,
+    scenes,
+    references,
+    resolution,
+    generateAudio,
+    profile,
+    estimate,
+    promptMode: "approved-scenes",
+    returnPrompts,
     client
   });
 }
@@ -747,19 +918,17 @@ async function generateMovieFromTextTool(args: JsonRecord): Promise<unknown> {
   const resolution = optionalString(args, "resolution") ?? profile.resolution;
   const generateAudio = optionalBoolean(args, "generateAudio") ?? profile.generateAudio;
   const estimate = estimateVideoUsage(scenes, { resolution, references });
-  const compactScenes = summarizeScenes(scenes, optionalBoolean(args, "returnPrompts") ?? false);
+  const returnPrompts = optionalBoolean(args, "returnPrompts") ?? false;
+  const compactScenes = summarizeScenes(scenes, returnPrompts);
+  const plan = {
+    scenes,
+    qualityProfile: profile,
+    estimate,
+    promptMode: "local-inference"
+  };
 
   if (isDryRun(args)) {
-    return {
-      scenes: compactScenes,
-      taskIds: [],
-      clipPaths: [],
-      qualityProfile: profile,
-      estimate,
-      promptMode: "local-inference",
-      plannedOnly: true,
-      note: "No Ark HTTP request was sent."
-    };
+    return buildPromptPlanResponse({ ...plan, args, references, resolution, generateAudio }, false);
   }
 
   const maxEstimatedCostCny = optionalNumber(args, "maxEstimatedCostCny");
@@ -773,6 +942,16 @@ async function generateMovieFromTextTool(args: JsonRecord): Promise<unknown> {
       promptMode: "local-inference",
       error: `Estimated cost ${estimate.estimatedCostCny} CNY is over maxEstimatedCostCny ${maxEstimatedCostCny}. No video API request was sent.`
     };
+  }
+
+  const subtitleError = getSubtitleModeError(args);
+  if (subtitleError) {
+    return buildNoApiMovieError({ ...plan, returnPrompts, error: subtitleError });
+  }
+
+  const approvalPlan = buildPromptPlanResponse({ ...plan, args, references, resolution, generateAudio }, true);
+  if (!isMatchingPromptApproval(args, approvalPlan.promptApprovalId)) {
+    return withPromptApprovalError(args, approvalPlan);
   }
 
   const { client, error } = createArkClientFromEnv();
@@ -797,7 +976,7 @@ async function generateMovieFromTextTool(args: JsonRecord): Promise<unknown> {
     profile,
     estimate,
     promptMode: "local-inference",
-    returnPrompts: optionalBoolean(args, "returnPrompts") ?? false,
+    returnPrompts,
     client
   });
 }
@@ -892,17 +1071,20 @@ async function runSceneMovieFlow(input: {
     subtitleTimeline
   };
 
-  if (subtitleMode === "burn") {
+  if (subtitleMode === "ass") {
     const subtitlePath = await writeAssSubtitleFile({
       cues: subtitleTimeline,
       outputFileName: replaceExtension(optionalString(input.args, "outputFileName") ?? "movie-subtitles.ass", ".ass")
     });
     successPayload.subtitlePath = subtitlePath;
-    successPayload.subtitledVideoPath = await burnSubtitles({
-      inputPath: finalVideoPath,
-      subtitlePath,
-      outputFileName: prefixFileName(optionalString(input.args, "outputFileName") ?? "movie.mp4", "subtitled-")
+    successPayload.subtitleFormat = "ass";
+  } else if (subtitleMode === "srt") {
+    const subtitlePath = await writeSrtSubtitleFile({
+      cues: subtitleTimeline,
+      outputFileName: replaceExtension(optionalString(input.args, "outputFileName") ?? "movie-subtitles.srt", ".srt")
     });
+    successPayload.subtitlePath = subtitlePath;
+    successPayload.subtitleFormat = "srt";
   }
 
   successPayload.manifestPath = await writeMovieManifest(input.args, successPayload);
@@ -918,6 +1100,98 @@ interface SceneGenerationResult {
   videoUrl?: string;
   clipPath?: string;
   error?: string;
+}
+
+interface PromptPlanInput {
+  args: JsonRecord;
+  scenes: ScenePrompt[];
+  references: ReferenceMedia[];
+  resolution: string;
+  generateAudio: boolean;
+  qualityProfile: QualityProfileSettings;
+  estimate: VideoUsageEstimate;
+  promptMode: string;
+}
+
+interface PromptPlanResponse {
+  scenes: ScenePrompt[];
+  taskIds: string[];
+  clipPaths: string[];
+  qualityProfile: QualityProfileSettings;
+  estimate: VideoUsageEstimate;
+  promptMode: string;
+  promptApprovalId: string;
+  plannedOnly: true;
+  approvalRequired: boolean;
+  note: string;
+  error?: string;
+}
+
+function buildPromptPlanResponse(input: PromptPlanInput, approvalRequired: boolean): PromptPlanResponse {
+  return {
+    scenes: summarizeScenes(input.scenes, true) as ScenePrompt[],
+    taskIds: [],
+    clipPaths: [],
+    qualityProfile: input.qualityProfile,
+    estimate: input.estimate,
+    promptMode: input.promptMode,
+    promptApprovalId: buildPromptApprovalId(input),
+    plannedOnly: true,
+    approvalRequired,
+    note: approvalRequired
+      ? "Review and polish the full scene prompts first. Re-run the same tool with the matching promptApprovalId only after the user approves the prompt plan."
+      : "No Ark HTTP request was sent. Review the full scene prompts and use the promptApprovalId only after they are approved."
+  };
+}
+
+function buildPromptApprovalId(input: PromptPlanInput): string {
+  const canonical = stableJson({
+    scenes: input.scenes.map((scene) => ({
+      id: scene.id,
+      duration: scene.duration,
+      ratio: scene.ratio,
+      prompt: scene.prompt.trim()
+    })),
+    resolution: input.resolution,
+    generateAudio: input.generateAudio,
+    watermark: optionalBoolean(input.args, "watermark") ?? false,
+    model: optionalString(input.args, "model"),
+    references: input.references
+  });
+  return `prompt-plan-${createHash("sha256").update(canonical).digest("hex").slice(0, 16)}`;
+}
+
+function isMatchingPromptApproval(args: JsonRecord, expectedId: string): boolean {
+  return optionalString(args, "promptApprovalId") === expectedId;
+}
+
+function withPromptApprovalError(args: JsonRecord, plan: PromptPlanResponse): PromptPlanResponse {
+  const providedId = optionalString(args, "promptApprovalId");
+  return {
+    ...plan,
+    error: providedId
+      ? "promptApprovalId does not match the current prompt plan. No video API request was sent."
+      : undefined
+  };
+}
+
+function buildNoApiMovieError(input: {
+  scenes: ScenePrompt[];
+  qualityProfile: QualityProfileSettings;
+  estimate: VideoUsageEstimate;
+  promptMode: string;
+  returnPrompts: boolean;
+  error: string;
+}) {
+  return {
+    scenes: summarizeScenes(input.scenes, input.returnPrompts),
+    taskIds: [],
+    clipPaths: [],
+    qualityProfile: input.qualityProfile,
+    estimate: input.estimate,
+    promptMode: input.promptMode,
+    error: input.error
+  };
 }
 
 async function runSingleSceneGeneration(
@@ -1017,14 +1291,25 @@ async function waitCachedTask(client: ArkVideoClient, taskId: string, args: Json
   }
 }
 
-type SubtitleMode = "none" | "manifest" | "burn";
+type SubtitleMode = "none" | "manifest" | "srt" | "ass";
 
 function readSubtitleMode(args: JsonRecord): SubtitleMode {
   const mode = optionalString(args, "subtitleMode") ?? "manifest";
-  if (mode === "none" || mode === "manifest" || mode === "burn") {
+  if (mode === "none" || mode === "manifest" || mode === "srt" || mode === "ass") {
     return mode;
   }
-  throw new Error("subtitleMode must be none, manifest, or burn");
+  throw new Error(getSubtitleModeError(args) ?? "subtitleMode must be none, manifest, srt, or ass");
+}
+
+function getSubtitleModeError(args: JsonRecord): string | undefined {
+  const mode = optionalString(args, "subtitleMode");
+  if (!mode || mode === "none" || mode === "manifest" || mode === "srt" || mode === "ass") {
+    return undefined;
+  }
+  if (mode === "burn") {
+    return "subtitleMode=burn is not supported in generate_movie flows. Use subtitleMode=srt or ass to create an editable sidecar file, then burn subtitles in a separate explicit rendering step if needed.";
+  }
+  return "subtitleMode must be none, manifest, srt, or ass";
 }
 
 function buildSubtitleSceneInputs(args: JsonRecord, scenes: ScenePrompt[]) {
@@ -1096,6 +1381,34 @@ function readArticleInput(args: JsonRecord) {
     narrativeStyle: optionalString(args, "narrativeStyle"),
     storySkillPath: optionalString(args, "storySkillPath")
   };
+}
+
+function readApprovedScenes(args: JsonRecord, profile: QualityProfileSettings): ScenePrompt[] {
+  const value = args.scenes;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error("scenes must be a non-empty array");
+  }
+  if (value.length > 8) {
+    throw new Error("scenes supports at most 8 entries");
+  }
+
+  const defaultRatio = optionalString(args, "ratio") ?? "16:9";
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error("scenes entries must be objects");
+    }
+    const record = item as JsonRecord;
+    return {
+      id: optionalString(record, "id") ?? `scene-${String(index + 1).padStart(2, "0")}`,
+      duration: normalizeSceneDuration(optionalNumber(record, "duration") ?? profile.secondsPerScene),
+      ratio: optionalString(record, "ratio") ?? defaultRatio,
+      prompt: requiredString(record, "prompt")
+    };
+  });
+}
+
+function normalizeSceneDuration(duration: number): number {
+  return Math.min(15, Math.max(4, Math.round(duration)));
 }
 
 function summarizeCreateInput(input: CreateTaskInput): Record<string, unknown> {
@@ -1310,4 +1623,16 @@ function optionalStringArray(args: JsonRecord, key: string): string[] | undefine
 
 function secondsToMs(seconds: number): number {
   return Math.max(1, seconds) * 1000;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }

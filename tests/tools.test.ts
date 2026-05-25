@@ -94,6 +94,93 @@ describe("tool token-saving article flow", () => {
     expect(result).toHaveProperty("estimate");
   });
 
+  it("generate_movie_from_text requires prompt approval before Ark API calls", async () => {
+    vi.stubEnv("ARK_API_KEY", "test-token");
+    const fetchMock = vi.fn(async () => {
+      throw new Error("Ark should not be called before prompts are approved");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = (await callTool("generate_movie_from_text", {
+      text: "一个办公室咖啡机主持晨会的30秒搞笑短片。",
+      sceneCount: 2,
+      qualityProfile: "cheap_preview"
+    })) as {
+      approvalRequired: boolean;
+      plannedOnly: boolean;
+      promptApprovalId: string;
+      scenes: Array<Record<string, unknown>>;
+      taskIds: string[];
+      clipPaths: string[];
+    };
+
+    expect(result.approvalRequired).toBe(true);
+    expect(result.plannedOnly).toBe(true);
+    expect(result.promptApprovalId).toMatch(/^prompt-plan-[a-f0-9]{16}$/);
+    expect(result.taskIds).toEqual([]);
+    expect(result.clipPaths).toEqual([]);
+    expect(result.scenes).toHaveLength(2);
+    expect(result.scenes[0]?.prompt).toContain("分镜1");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("generate_movie_from_scenes plans polished prompts for approval without Ark API calls", async () => {
+    vi.stubEnv("ARK_API_KEY", "test-token");
+    const fetchMock = vi.fn(async () => {
+      throw new Error("Ark should not be called before polished prompts are approved");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = (await callTool("generate_movie_from_scenes", {
+      scenes: [
+        {
+          id: "scene-01",
+          duration: 5,
+          ratio: "9:16",
+          prompt: "用户打磨后的分镜1：AI咖啡机一本正经开晨会，主角表情崩住。"
+        },
+        {
+          id: "scene-02",
+          duration: 5,
+          ratio: "9:16",
+          prompt: "用户打磨后的分镜2：打印机鼓掌，办公用品开始尬舞。"
+        }
+      ],
+      qualityProfile: "draft_movie"
+    })) as {
+      approvalRequired: boolean;
+      promptMode: string;
+      promptApprovalId: string;
+      scenes: Array<Record<string, unknown>>;
+    };
+
+    expect(result.approvalRequired).toBe(true);
+    expect(result.promptMode).toBe("approved-scenes");
+    expect(result.promptApprovalId).toMatch(/^prompt-plan-[a-f0-9]{16}$/);
+    expect(result.scenes[0]?.prompt).toBe("用户打磨后的分镜1：AI咖啡机一本正经开晨会，主角表情崩住。");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("generate_movie_from_text rejects burn subtitle mode before Ark API calls", async () => {
+    vi.stubEnv("ARK_API_KEY", "test-token");
+    const fetchMock = vi.fn(async () => {
+      throw new Error("Ark should not be called for invalid subtitle mode");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = (await callTool("generate_movie_from_text", {
+      text: "一个办公室咖啡机主持晨会的30秒搞笑短片。",
+      sceneCount: 2,
+      qualityProfile: "cheap_preview",
+      subtitleMode: "burn"
+    })) as { error: string; taskIds: string[]; clipPaths: string[] };
+
+    expect(result.error).toContain("subtitleMode=burn is not supported");
+    expect(result.taskIds).toEqual([]);
+    expect(result.clipPaths).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("generate_movie_from_text blocks over maxEstimatedCostCny before Ark API calls", async () => {
     const result = await callTool("generate_movie_from_text", {
       text: "两只小猫在办公室打工，系统崩溃后老板猫出现，最后小白背锅。",
@@ -131,12 +218,7 @@ describe("tool token-saving article flow", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = (await callTool("generate_movie_from_text", {
-      text: "第一段。第二段。第三段。第四段。第五段。第六段。",
-      sceneCount: 3,
-      maxConcurrency: 2,
-      subtitleMode: "manifest"
-    })) as {
+    type MovieErrorResult = {
       error: string;
       taskIds: string[];
       clipPaths: string[];
@@ -145,12 +227,29 @@ describe("tool token-saving article flow", () => {
       manifestPath: string;
     };
 
-    expect(result.error).toContain("generation failed");
-    expect(new Set(result.taskIds)).toEqual(new Set(["cgt-1", "cgt-2"]));
-    expect(result.clipPaths).toEqual([]);
-    expect(result.parallel).toEqual({ maxConcurrency: 2 });
-    expect(result.sceneResults.map((scene) => scene.status)).toEqual(["failed", "failed", "skipped"]);
-    expect(result.manifestPath).toMatch(/movie-manifest-.+\.json$/);
+    const approvalPlan = (await callTool("generate_movie_from_text", {
+      text: "第一段。第二段。第三段。第四段。第五段。第六段。",
+      sceneCount: 3,
+      maxConcurrency: 2,
+      subtitleMode: "manifest",
+      forceRegenerate: true
+    })) as { promptApprovalId: string };
+
+    const approvedResult = (await callTool("generate_movie_from_text", {
+      text: "第一段。第二段。第三段。第四段。第五段。第六段。",
+      sceneCount: 3,
+      maxConcurrency: 2,
+      subtitleMode: "manifest",
+      forceRegenerate: true,
+      promptApprovalId: approvalPlan.promptApprovalId
+    })) as MovieErrorResult;
+
+    expect(approvedResult.error).toContain("generation failed");
+    expect(new Set(approvedResult.taskIds)).toEqual(new Set(["cgt-1", "cgt-2"]));
+    expect(approvedResult.clipPaths).toEqual([]);
+    expect(approvedResult.parallel).toEqual({ maxConcurrency: 2 });
+    expect(approvedResult.sceneResults.map((scene) => scene.status)).toEqual(["failed", "failed", "skipped"]);
+    expect(approvedResult.manifestPath).toMatch(/movie-manifest-.+\.json$/);
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(2);
   });
 });

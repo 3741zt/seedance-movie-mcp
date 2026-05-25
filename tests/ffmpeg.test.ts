@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAssSubtitleContent, buildConcatListContent, buildSubtitleTimeline } from "../src/ffmpeg.js";
+import { buildAssSubtitleContent, buildConcatListContent, buildSrtSubtitleContent, buildSubtitleTimeline } from "../src/ffmpeg.js";
 
 describe("buildConcatListContent", () => {
   it("escapes Windows paths for ffmpeg concat demuxer list files", () => {
@@ -35,5 +35,21 @@ describe("subtitle helpers", () => {
 
     expect(content).toContain("[Script Info]");
     expect(content).toContain("Dialogue: 0,0:00:00.00,0:00:04.00,Default,,0,0,0,,第一\\{句\\}\\\\换行\\N下一行");
+  });
+
+  it("builds editable SRT sidecar subtitle content", () => {
+    const content = buildSrtSubtitleContent([
+      { sceneId: "scene-01", startSeconds: 0, endSeconds: 4.5, text: "第一句\n下一行" },
+      { sceneId: "scene-02", startSeconds: 4.5, endSeconds: 10, text: "第二句" }
+    ]);
+
+    expect(content).toBe(
+      "1\n" +
+        "00:00:00,000 --> 00:00:04,500\n" +
+        "第一句\n下一行\n\n" +
+        "2\n" +
+        "00:00:04,500 --> 00:00:10,000\n" +
+        "第二句\n"
+    );
   });
 });

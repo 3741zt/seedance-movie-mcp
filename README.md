@@ -8,16 +8,16 @@ Seedance Movie MCP 是一个本地 stdio MCP Server，用于接入火山方舟 S
 
 - Runtime config comes from environment variables: `ARK_API_KEY`, `ARK_MODEL`, `ARK_BASE_URL`, `ARK_MAX_CONCURRENCY`, `FFMPEG_PATH`.
 - API keys are not tool parameters, so they do not need to enter chat context.
-- `generate_movie` and `generate_movie_from_text` run scenes through a bounded parallel pool. Default concurrency is `3`; accepted range is `1-5`.
-- `subtitleMode` supports `none`, `manifest`, and `burn`. Manifest mode avoids re-encoding; burn mode writes ASS subtitles and burns them with ffmpeg.
+- `generate_movie`, `generate_movie_from_text`, and `generate_movie_from_scenes` return a full prompt approval plan before any paid Ark request. Re-run with the matching `promptApprovalId` only after the user reviews and approves the prompts.
+- `subtitleMode` supports `none`, `manifest`, `srt`, and `ass`. Subtitles are editable timeline or sidecar artifacts; one-shot burn-in is intentionally not supported.
 - Story splitting defaults to `witty_compact`, a humorous and tight narrative style. You can also pass a local Markdown/text story skill with `storySkillPath` or `SEEDANCE_STORY_SKILL_PATH`.
 - A project-local Node.js runtime can be installed into `.mcp-runtime` so Codex Desktop, Codex CLI on Windows, and Codex CLI on Linux do not depend on the system Node version.
 - The server outputs `sceneResults`, `parallel`, `subtitleTimeline`, and `manifestPath` so later editing tools can package clips, titles, transitions, captions, and subtitles.
 
 - 运行时配置来自环境变量：`ARK_API_KEY`、`ARK_MODEL`、`ARK_BASE_URL`、`ARK_MAX_CONCURRENCY`、`FFMPEG_PATH`。
 - API key 不作为工具参数传入，避免进入聊天上下文或工具日志。
-- `generate_movie` / `generate_movie_from_text` 使用有上限的并行池处理分镜，默认并发 `3`，允许范围 `1-5`。
-- `subtitleMode` 支持 `none`、`manifest`、`burn`。`manifest` 不重编码视频，`burn` 会生成 ASS 字幕并用 ffmpeg 烧录。
+- `generate_movie`、`generate_movie_from_text`、`generate_movie_from_scenes` 会先返回完整提示词确认计划，不会直接发起付费 Ark 请求。只有用户审阅并确认后，带回匹配的 `promptApprovalId` 才会生成。
+- `subtitleMode` 支持 `none`、`manifest`、`srt`、`ass`。字幕默认是可编辑时间轴或 sidecar 文件；一键硬烧字幕已刻意禁用。
 - 本地分镜默认采用 `witty_compact`，强调诙谐、幽默、紧凑；也支持通过 `storySkillPath` 或 `SEEDANCE_STORY_SKILL_PATH` 读取外部 Markdown/text 叙事 skill。
 - 安装脚本可把 Node.js 安装到项目内 `.mcp-runtime`，兼容 Windows Codex App、Windows Codex CLI、Linux Codex CLI。
 - 返回 `sceneResults`、`parallel`、`subtitleTimeline`、`manifestPath`，方便后续交给 Codex 或视频插件继续做片头、转场、字幕包装。
@@ -176,8 +176,9 @@ If you installed the project-local Node runtime, use the generated `node` path i
 - `wait_video_task`: polls until a terminal status or timeout.
 - `download_video`: downloads an mp4 to the local output directory.
 - `concat_videos`: concatenates local clips with ffmpeg.
-- `generate_movie`: full story-to-video flow.
-- `generate_movie_from_text`: token-saving text-to-video flow; detailed prompts stay inside the MCP process unless `returnPrompts` is true.
+- `generate_movie`: full story-to-video flow with prompt approval gating.
+- `generate_movie_from_scenes`: generates from explicit user-polished scene prompts, also gated by `promptApprovalId`.
+- `generate_movie_from_text`: token-saving text-to-video flow with prompt approval gating.
 
 - `check_runtime_config`：返回 `hasApiKey`、`model`、`baseUrl`、`ffmpegPath`、`maxConcurrency`，不回显 key。
 - `split_story_to_scenes`：把剧情拆成稳定分镜提示词。
@@ -189,14 +190,15 @@ If you installed the project-local Node runtime, use the generated `node` path i
 - `wait_video_task`：轮询到终态或超时。
 - `download_video`：把 mp4 下载到本地输出目录。
 - `concat_videos`：用 ffmpeg 拼接本地片段。
-- `generate_movie`：剧情到完整视频的一键流程。
-- `generate_movie_from_text`：省上下文的文本到视频流程；除非 `returnPrompts=true`，详细提示词只留在 MCP 内部。
+- `generate_movie`：剧情到完整视频流程，默认先返回提示词确认计划。
+- `generate_movie_from_scenes`：从用户打磨后的显式分镜提示词生成，同样需要 `promptApprovalId`。
+- `generate_movie_from_text`：省上下文的文本到视频流程，默认先返回提示词确认计划。
 
 ## Parallel Generation / 并行生成
 
-`generate_movie` and `generate_movie_from_text` process each scene independently: cache lookup, task creation, polling, download, and cache write. Results are returned in scene order even when tasks finish out of order.
+`generate_movie`, `generate_movie_from_text`, and `generate_movie_from_scenes` process each scene independently after prompt approval: cache lookup, task creation, polling, download, and cache write. Results are returned in scene order even when tasks finish out of order.
 
-`generate_movie` 和 `generate_movie_from_text` 会对每个分镜独立执行：查缓存、创建任务、轮询、下载、写缓存。即使任务完成顺序不同，返回结果也会按分镜顺序排列。
+`generate_movie`、`generate_movie_from_text`、`generate_movie_from_scenes` 会在提示词确认后对每个分镜独立执行：查缓存、创建任务、轮询、下载、写缓存。即使任务完成顺序不同，返回结果也会按分镜顺序排列。
 
 ```json
 {
@@ -205,10 +207,14 @@ If you installed the project-local Node runtime, use the generated `node` path i
   "secondsPerScene": 5,
   "ratio": "9:16",
   "maxConcurrency": 3,
-  "subtitleMode": "manifest",
-  "returnPrompts": false
+  "subtitleMode": "srt",
+  "returnPrompts": true
 }
 ```
+
+The first non-dry run returns `approvalRequired: true`, full `scenes[].prompt`, and a `promptApprovalId` without calling Ark. Review and edit the prompts. If you edit prompts directly, call `generate_movie_from_scenes` with the polished scene list. Only the final approved generation call should include the matching `promptApprovalId`.
+
+第一次非 dry run 会返回 `approvalRequired: true`、完整的 `scenes[].prompt` 和 `promptApprovalId`，不会调用 Ark。先审阅并打磨提示词。如果你直接改了每段提示词，请使用 `generate_movie_from_scenes` 传入打磨后的分镜列表。只有最终确认生成时才带回匹配的 `promptApprovalId`。
 
 On failure, the server stops scheduling new scenes, waits for already-started work to settle, returns partial `sceneResults`, and does not concatenate an incomplete final movie.
 
@@ -220,17 +226,23 @@ On failure, the server stops scheduling new scenes, waits for already-started wo
 
 - `none`: no subtitle timeline.
 - `manifest`: default. Returns `subtitleTimeline` and writes a manifest without re-encoding video.
-- `burn`: writes ASS subtitles and burns them into a second output video.
+- `srt`: writes an editable `.srt` sidecar file and includes it in the manifest.
+- `ass`: writes an editable `.ass` sidecar file and includes it in the manifest.
 
 `subtitleMode`：
 
 - `none`：不生成字幕时间轴。
 - `manifest`：默认值。返回 `subtitleTimeline` 并写 manifest，不重编码视频。
-- `burn`：写 ASS 字幕，并烧录生成第二个带字幕视频。
+- `srt`：写出可编辑的 `.srt` 字幕文件，并写入 manifest。
+- `ass`：写出可编辑的 `.ass` 字幕文件，并写入 manifest。
 
 If `subtitles` is omitted, each scene beat becomes the subtitle text. `outputManifestFileName` can override the manifest filename.
 
 未传 `subtitles` 时，会使用每个分镜的 beat 作为字幕。`outputManifestFileName` 可以覆盖 manifest 文件名。
+
+`subtitleMode=burn` is rejected before any Ark call. Burn subtitles in a separate renderer/editor after reviewing the sidecar subtitle file.
+
+`subtitleMode=burn` 会在调用 Ark 前被拒绝。需要硬烧字幕时，请先确认 sidecar 字幕文件，再交给独立渲染/剪辑步骤处理。
 
 ## Story Skills / 叙事 Skill
 

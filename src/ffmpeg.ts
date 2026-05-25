@@ -82,6 +82,15 @@ export function buildAssSubtitleContent(cues: SubtitleCue[]): string {
   ].join("\n");
 }
 
+export function buildSrtSubtitleContent(cues: SubtitleCue[]): string {
+  return cues
+    .map(
+      (cue, index) =>
+        `${index + 1}\n${formatSrtTime(cue.startSeconds)} --> ${formatSrtTime(cue.endSeconds)}\n${escapeSrtText(cue.text)}\n`
+    )
+    .join("\n");
+}
+
 export async function writeAssSubtitleFile(input: {
   cues: SubtitleCue[];
   outputFileName?: string;
@@ -91,6 +100,18 @@ export async function writeAssSubtitleFile(input: {
   await mkdir(outputDir, { recursive: true });
   const outputPath = path.resolve(outputDir, sanitizeAssFileName(input.outputFileName ?? `subtitles-${timestampForFileName()}.ass`));
   await writeFile(outputPath, buildAssSubtitleContent(input.cues), "utf8");
+  return outputPath;
+}
+
+export async function writeSrtSubtitleFile(input: {
+  cues: SubtitleCue[];
+  outputFileName?: string;
+  outputDir?: string;
+}): Promise<string> {
+  const outputDir = input.outputDir ?? DEFAULT_OUTPUT_DIR;
+  await mkdir(outputDir, { recursive: true });
+  const outputPath = path.resolve(outputDir, sanitizeSrtFileName(input.outputFileName ?? `subtitles-${timestampForFileName()}.srt`));
+  await writeFile(outputPath, buildSrtSubtitleContent(input.cues), "utf8");
   return outputPath;
 }
 
@@ -163,8 +184,24 @@ function formatAssTime(seconds: number): string {
   ).padStart(2, "0")}`;
 }
 
+function formatSrtTime(seconds: number): string {
+  const safeSeconds = Math.max(0, seconds);
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const wholeSeconds = Math.floor(safeSeconds % 60);
+  const milliseconds = Math.floor((safeSeconds - Math.floor(safeSeconds)) * 1000);
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(wholeSeconds).padStart(
+    2,
+    "0"
+  )},${String(milliseconds).padStart(3, "0")}`;
+}
+
 function escapeAssText(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/\{/g, "\\{").replace(/\}/g, "\\}").replace(/\r?\n/g, "\\N");
+}
+
+function escapeSrtText(value: string): string {
+  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
 }
 
 function escapeFilterPath(filePath: string): string {
@@ -190,6 +227,12 @@ function sanitizeAssFileName(fileName: string): string {
   const baseName = path.basename(fileName).replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_").trim();
   const safeName = baseName || `subtitles-${Date.now()}.ass`;
   return safeName.toLowerCase().endsWith(".ass") ? safeName : `${safeName}.ass`;
+}
+
+function sanitizeSrtFileName(fileName: string): string {
+  const baseName = path.basename(fileName).replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_").trim();
+  const safeName = baseName || `subtitles-${Date.now()}.srt`;
+  return safeName.toLowerCase().endsWith(".srt") ? safeName : `${safeName}.srt`;
 }
 
 function runFfmpeg(ffmpegPath: string, args: string[]): Promise<void> {
